@@ -8,6 +8,7 @@ import math
 from datetime import datetime
 from google import genai
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 # --- 1. 核心修复：API 环境适配 ---
 # 它会自动在你当前文件夹找 .env 文件并读取里面的变量
@@ -24,28 +25,31 @@ def get_intelligent_model_pool():
     try:
         models = client.models.list()
         pool = []
+        # 严格黑名单：排除掉配额常年为 0 的特殊模型
+        black_list = ["computer-use", "embedding", "tts", "imagen", "aqa", "vision"]
+        
         for m in models:
             m_name = m.name.lower()
-            # 排除非对话模型
-            if any(x in m_name for x in ["embedding", "tts", "imagen", "aqa"]):
-                continue
-            if "gemini" in m_name:
-                pool.append(m.name)
+            # 必须包含 gemini，且不在黑名单中，且必须是 flash 或 pro
+            if "gemini" in m_name and not any(x in m_name for x in black_list):
+                if any(v in m_name for v in ["flash", "pro"]):
+                    full_name = m.name if m.name.startswith("models/") else f"models/{m.name}"
+                    pool.append(full_name)
         
-        # 2026 算力优先级排序
+        # 定义 2026 算力优先级
         def model_priority(name):
-            name = name.lower()
-            if "3-flash" in name: return 10
-            if "2.5-flash" in name: return 8
-            if "2.0-flash" in name: return 6
-            if "1.5-pro" in name: return 4
-            return 2
+            n = name.lower()
+            if "3-flash" in n: return 10
+            if "2.0-flash" in n: return 8
+            if "1.5-pro" in n: return 6
+            if "1.5-flash" in n: return 4
+            return 0
 
         pool.sort(key=model_priority, reverse=True)
-        return pool if pool else ["models/gemini-1.5-flash"]
+        # 只保留最有把握的前 3 个模型，避免无效 fallback 耗尽配额
+        return pool[:3] if pool else ["models/gemini-1.5-flash"]
     except:
-        # 保底固态列表
-        return ["models/gemini-3-flash", "models/gemini-2.5-flash", "models/gemini-1.5-flash"]
+        return ["models/gemini-3-flash", "models/gemini-1.5-flash"]
 
 # 全局算力状态
 MODEL_POOL = get_intelligent_model_pool()
@@ -103,9 +107,6 @@ class OracleSystem:
         style = ttk.Style()
         style.theme_use('clam')
         style.configure("TCombobox", fieldbackground=self.C_INPUT_BG, background="#222", foreground=self.C_TEXT, arrowcolor=self.C_GOLD)
-        self.master.option_add("*TCombobox*Listbox.background", self.C_INPUT_BG)
-        self.master.option_add("*TCombobox*Listbox.foreground", self.C_TEXT)
-        self.master.option_add("*TCombobox*Listbox.selectBackground", self.C_GOLD)
 
         self.setup_ui()
         self.animate_stars()
@@ -121,185 +122,211 @@ class OracleSystem:
         
         tk.Label(self.input_area, text="🔱 核心命理维度采集 🔱", fg=self.C_GOLD, bg=self.C_BG, font=("Microsoft YaHei", 12, "bold")).pack(pady=(10, 5))
 
+        # --- 第一行：基础属性 (加回了出生地) ---
         f1 = tk.Frame(self.input_area, bg=self.C_BG); f1.pack(fill="x", pady=5)
-        tk.Label(f1, text="名讳:", fg=self.C_TEXT, bg=self.C_BG, font=("Microsoft YaHei", 10)).pack(side="left")
-        self.name_ent = tk.Entry(f1, width=10, bg=self.C_INPUT_BG, fg=self.C_TEXT, insertbackground=self.C_GOLD, font=("Microsoft YaHei", 10), borderwidth=1, relief="solid")
-        self.name_ent.pack(side="left", padx=5, ipady=3); self.name_ent.insert(0, "无名氏")
+        tk.Label(f1, text="名讳:", fg=self.C_TEXT, bg=self.C_BG).pack(side="left")
+        self.name_ent = tk.Entry(f1, width=8, bg=self.C_INPUT_BG, fg=self.C_TEXT, insertbackground=self.C_GOLD)
+        self.name_ent.pack(side="left", padx=5); self.name_ent.insert(0, "无名氏")
 
-        tk.Label(f1, text="乾坤:", fg=self.C_TEXT, bg=self.C_BG, font=("Microsoft YaHei", 10)).pack(side="left", padx=(15, 0))
         self.gender_cb = ttk.Combobox(f1, values=["乾 (男)", "坤 (女)"], width=6, state="readonly")
-        self.gender_cb.set("乾 (男)"); self.gender_cb.pack(side="left", padx=5)
+        self.gender_cb.set("乾 (男)"); self.gender_cb.pack(side="left", padx=10)
+        
+        self.calendar_cb = ttk.Combobox(f1, values=["公历", "农历"], width=5, state="readonly")
+        self.calendar_cb.set("公历"); self.calendar_cb.pack(side="left", padx=5)
 
-        tk.Label(f1, text="出生地:", fg=self.C_TEXT, bg=self.C_BG, font=("Microsoft YaHei", 10)).pack(side="left", padx=(15, 0))
-        self.place_ent = tk.Entry(f1, width=15, bg=self.C_INPUT_BG, fg=self.C_TEXT, insertbackground=self.C_GOLD, font=("Microsoft YaHei", 10), borderwidth=1, relief="solid")
-        self.place_ent.pack(side="left", padx=5, ipady=3); self.place_ent.insert(0, "北京")
+        tk.Label(f1, text=" 出生地:", fg=self.C_TEXT, bg=self.C_BG).pack(side="left")
+        self.place_ent = tk.Entry(f1, width=12, bg=self.C_INPUT_BG, fg=self.C_TEXT, insertbackground=self.C_GOLD)
+        self.place_ent.pack(side="left", padx=5); self.place_ent.insert(0, "北京")
 
+        # --- 第二行：生辰 ---
         f2 = tk.Frame(self.input_area, bg=self.C_BG); f2.pack(fill="x", pady=5)
-        self.calendar_type = ttk.Combobox(f2, values=["阳历 (公历)", "阴历 (农历)"], width=10, state="readonly")
-        self.calendar_type.set("阳历 (公历)"); self.calendar_type.pack(side="left")
-        self.year_cb = ttk.Combobox(f2, values=[str(y) for y in range(1940, 2027)], width=6); self.year_cb.set("1996"); self.year_cb.pack(side="left", padx=5)
-        self.month_cb = ttk.Combobox(f2, values=[f"{m:02d}" for m in range(1, 13)], width=4); self.month_cb.set("03"); self.month_cb.pack(side="left", padx=5)
-        self.day_cb = ttk.Combobox(f2, values=[f"{d:02d}" for d in range(1, 32)], width=4); self.day_cb.set("05"); self.day_cb.pack(side="left", padx=5)
-        self.hour_cb = ttk.Combobox(f2, values=ZODIAC_HOURS, width=12, state="readonly"); self.hour_cb.set("巳时 (09:00-11:00)"); self.hour_cb.pack(side="left", padx=10)
+        tk.Label(f2, text="时间:", fg=self.C_TEXT, bg=self.C_BG).pack(side="left")
+        self.year_cb = ttk.Combobox(f2, values=[str(y) for y in range(1940, 2027)], width=6); self.year_cb.set("1996"); self.year_cb.pack(side="left", padx=2)
+        self.month_cb = ttk.Combobox(f2, values=[f"{m:02d}" for m in range(1, 13)], width=4); self.month_cb.set("03"); self.month_cb.pack(side="left", padx=2)
+        self.day_cb = ttk.Combobox(f2, values=[f"{d:02d}" for d in range(1, 32)], width=4); self.day_cb.set("05"); self.day_cb.pack(side="left", padx=2)
+        self.hour_cb = ttk.Combobox(f2, values=ZODIAC_HOURS, width=18, state="readonly"); self.hour_cb.set("巳时"); self.hour_cb.pack(side="left", padx=10)
 
+        # --- 第三行：诉求 ---
         f3 = tk.Frame(self.input_area, bg=self.C_BG); f3.pack(fill="x", pady=(10, 0))
-        tk.Label(f3, text="心中祈愿之疑:", fg=self.C_GOLD, bg=self.C_BG, font=("Microsoft YaHei", 11, "bold")).pack(side="left")
-        self.quest_ent = tk.Entry(f3, bg="#0F0F1A", fg=self.C_TEXT, insertbackground=self.C_GOLD, font=("Microsoft YaHei", 12), borderwidth=1, relief="solid")
-        self.quest_ent.pack(side="left", fill="x", expand=True, padx=(10, 0), ipady=12)
-        self.quest_ent.insert(0, "测算近期的事业财运发展")
+        tk.Label(f3, text="心中祈愿:", fg=self.C_GOLD, bg=self.C_BG, font=("Microsoft YaHei", 11, "bold")).pack(side="left")
+        self.quest_ent = tk.Entry(f3, bg="#0F0F1A", fg=self.C_TEXT, insertbackground=self.C_GOLD, font=("Microsoft YaHei", 12), borderwidth=1)
+        self.quest_ent.pack(side="left", fill="x", expand=True, padx=(10, 0), ipady=8); self.quest_ent.insert(0, "测算近期的事业财运发展")
 
+        # 画布与按钮
         self.canvas = tk.Canvas(self.master, bg=self.C_BG, highlightthickness=0)
         self.canvas.grid(row=1, sticky="nsew")
-        self.run_btn = tk.Button(self.canvas, text="✦ 开启算力合参 ✦", command=self.start_workflow, 
-                                 bg=self.C_GOLD, fg="black", activebackground="#FFE082",
-                                 font=("Microsoft YaHei", 14, "bold"), padx=50, pady=15, relief="flat", cursor="hand2")
+        self.run_btn = tk.Button(self.canvas, text="✦ 开启算力合参 ✦", command=self.start_workflow, bg=self.C_GOLD, fg="black", font=("Microsoft YaHei", 14, "bold"), padx=50, pady=15, relief="flat")
         self.canvas_btn_window = self.canvas.create_window(550, 200, window=self.run_btn)
 
+        # 输出区
         output_frame = tk.Frame(self.master, bg=self.C_BG, padx=40, pady=15)
         output_frame.grid(row=2, sticky="nsew")
-        self.out_panel = tk.Frame(output_frame, bg="#050505", highlightthickness=1, highlightbackground="#222")
-        self.out_panel.pack(fill="both", expand=True)
-        self.out_text = tk.Text(self.out_panel, wrap="word", bg="#050505", fg="#F0F0F0", font=("Microsoft YaHei", 11), padx=30, pady=20, borderwidth=0, spacing2=8)
+        self.out_text = tk.Text(output_frame, wrap="word", bg="#050505", fg="#F0F0F0", font=("Microsoft YaHei", 11), padx=30, pady=20, spacing2=8)
         self.out_text.pack(fill="both", expand=True)
+        self.out_text.tag_config("gold_tag", foreground="#D4AF37", font=("Microsoft YaHei", 12, "bold"))
+        self.out_text.tag_config("system_tag", foreground="#888888", font=("Consolas", 10))
 
-    def safe_generate_content(self, prompt):
-        global CURRENT_MODEL_INDEX
-        for _ in range(len(MODEL_POOL)):
-            with MODEL_LOCK: model_name = MODEL_POOL[CURRENT_MODEL_INDEX]
+    def safe_generate_with_fallback(self, prompt, model_pool, delay=0):
+        """具备防熔断机制的生成器"""
+        if delay > 0: time.sleep(delay)
+        
+        last_error = ""
+        for model_name in model_pool:
             try:
-                response = client.models.generate_content(model=model_name, contents=prompt)
-                if response and response.text: return response.text
-            except Exception:
-                with MODEL_LOCK: CURRENT_MODEL_INDEX = (CURRENT_MODEL_INDEX + 1) % len(MODEL_POOL)
-                continue
-        return "机群响应超时，请重试。"
+                # 显式设置较短的超时，防止挂死
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                if response and response.text:
+                    return response.text, model_name
+            except Exception as e:
+                last_error = str(e)
+                # 如果是配额问题，直接休眠并尝试池中下一个稳健模型
+                if "429" in last_error:
+                    time.sleep(1.5) 
+                continue 
+        
+        return f"【维度坍缩】: 当前算力节点繁忙(429)。请稍后 30 秒再次开启推演。", "None"
 
     def start_workflow(self):
         self.out_text.delete("1.0", tk.END)
         self.run_btn.config(state="disabled", text="正在推演量子场...")
+        
+        # --- 核心修复：在此处打包 info 字典时必须包含 'calendar' ---
         info = {
-            "name": self.name_ent.get(), 
+            "name": self.name_ent.get(),
             "gender": self.gender_cb.get(),
+            "calendar": self.calendar_cb.get(),
             "place": self.place_ent.get(),
-            "calendar": self.calendar_type.get(), 
-            "question": self.quest_ent.get(),
             "birth": f"{self.year_cb.get()}-{self.month_cb.get()}-{self.day_cb.get()}",
-            "hour": self.hour_cb.get()
+            "hour": self.hour_cb.get(),
+            "question": self.quest_ent.get()
         }
         threading.Thread(target=self._run_agents, args=(info,), daemon=True).start()
 
     def _run_agents(self, info):
         try:
-            # 获取动态时空参数（非hardcode）
+            # 获取动态流年与环境参数
+            model_pool = get_intelligent_model_pool() 
+            current_model = model_pool[0]  # 用于最终显示的默认标签
             lunar = get_dynamic_lunar_params()
-            
-            # 1. 真实洗牌与抽牌
             sample_cards = random.sample(FULL_DECK, 9)
-            drawn_results = [{"card": card, "direction": random.choice(["正位", "逆位"])} for card in sample_cards]
-            card_names = [f"{c['card']}({c['direction']})" for c in drawn_results]
+            card_names = [f"{c}({random.choice(['正位', '逆位'])})" for c in sample_cards]
             
-            # 构造全量信息上下文，确保每个 Agent 拥有完整画像
-            user_context = (f"【命主信息】姓名：{info['name']}，性别：{info['gender']}，出生地：{info['place']}，"
-                            f"生辰：{info['calendar']} {info['birth']} {info['hour']}。\n"
-                            f"【测算时空】公历日期：{lunar['cur_date']}，流年干支：{lunar['lunar_year']}年。\n"
-                            f"【心中祈愿】：{info['question']}\n")
+            # --- 第一步：同步锚定逻辑基点（防止元神算错） ---
+            self._write(f">> 算力矩阵激活 | 当前首选算力: {current_model}\n", "system_tag")
+            
+            # 这里是专门用来“定性”的 Prompt，强制 AI 严谨推算
+            bazi_init_prompt = (
+                f"你是一位精通历法的排盘专家。命主出生：{info['birth']} {info['hour']}。\n"
+                f"【逻辑指令】：\n"
+                f"1. 确认身份：已知1998年5月19日为丙子日，请逻辑推导21日的日干支，明确元神五行（如戊土）。\n"
+                f"2. 确认流年：当前为 {lunar['lunar_year']} 年，请简述该年份干支对上述元神的基本磁场影响。\n"
+                f"只需要回复：‘【逻辑定性】：日主XX，流年XX对XX产生XX作用。’"
+            )
+            
+            # 拿到 AI 自行推导的元神结果（不再是 hardcode，而是 AI 的运算结果）
+            bazi_base_conclusion, used_anchor_model = self.safe_generate_with_fallback(bazi_init_prompt, model_pool)
+            self._write(f"【算力溯源: {used_anchor_model}】: {bazi_base_conclusion}\n", "gold_tag")
 
-            # Agent 1: 八字大势算力
-            self._write("【Agent 1】正在排演八字大势...\n")
-            p1 = (user_context + 
-                  f"你是一位命理逻辑大师。请基于以下维度合参：\n"
-                  f"一、排出四柱干支及十神格局，判定喜忌与五行平衡度；\n"
-                  f"二、深度推算当前{lunar['lunar_year']}对命局的交互，捕捉天克地冲、三合六合及岁运压力；\n"
-                  f"三、运用神煞（贵人/煞星）与梅花易数体用逻辑锁定近期变数；\n"
-                  f"四、将负面变量解读为‘性格的磨刀石’，将命理不足转化为‘待开启的修行课’。\n"
-                  f"语气沉稳、古雅、透彻。限制100字。")
-            a1_out = self.safe_generate_content(p1)
+            # --- 第二步：构造“强制扣题”的增强上下文 ---
+            # 把 AI 自己算的元神喂回去
+            refined_context = (
+                f"【身份唯一性协议】：\n"
+                f"- 命主：{info['name']} ({info['gender']})，出生于 {info['place']}, 日历计算采用 {info['calendar']}，出生年份和月份为 {info['birth']}，出生时间为 {info['hour']}。\n"
+                f"- 命理基准：{bazi_base_conclusion}（这是本次推演的绝对唯一坐标）。\n"
+                f"- 流年变量：{lunar['lunar_year']} 年，当前日期：{lunar['cur_date']}。\n"
+                f"- 核心判定任务：针对诉求【{info['question']}】进行专项推演。\n"
+            )
 
-            # Agent 2: 紫微精细坐标
-            self._write("【Agent 2】正在定位紫微宫位...\n")
-            p2 = (user_context +
-                  f"你是一位精通紫微斗数与星命学的专家。请基于以下维度合参：\n"
-                  f"一、审视命盘格局与主星庙旺，重点分析‘三方四正’的能量守恒与‘身宫’后天倾向；\n"
-                  f"二、锁定当前流年四化：{lunar['si_hua']}，推演其对原局宫位的引动，定位化禄的支点与化忌的雷区；\n"
-                  f"三、计算六煞星（如铃星、陀罗）对诉求宫位的干扰程度；\n"
-                  f"四、将煞星解读为‘环境给予的特殊考验’，将挫折视为‘时空坐标的重组’。\n"
-                  f"语气睿智、透彻、具穿透力。限制100字。")
-            a2_out = self.safe_generate_content(p2)
+            # 并发配置（带错峰 delay 以规避 Rate Limit）
+            tasks = [
+                ("气数判定节点", refined_context + 
+                  f"根据八字根基，分析{lunar['lunar_year']}年此元神的稳定性。"
+                  f"问题映射：{info['question']}。请直接给出基于气数的判定结论。限制120字。", 0.1),
+                
+                ("时空变数节点", refined_context +
+                  f"根据紫微流年四化 {lunar['si_hua']}，定位该问题涉及的人事损益。"
+                  f"问题映射：{info['question']}。请给出基于现实节点的变动概率。限制100字。", 1.2),
+                
+                ("潜意识映射节点", refined_context +
+                  f"基于九星阵 {card_names}，解析命主对此问题的心理驱动力。"
+                  f"问题映射：{info['question']}。给出直觉指引。限制100字。", 2.3)
+            ]
 
-            # Agent 3: 塔罗全量变量
-            self._write(f"【Agent 3】塔罗九阵能量同步中...\n")
-            p3 = (user_context +
-                  f"你是一位塔罗决策专家。请基于当前九星阵：{card_names} 进行时空扫描：\n"
-                  f"一、解读阵中‘核心轴线’的能量流动，判定用户诉求（{info['question']}）在短期内的变量与阻力点；\n"
-                  f"二、带入流年{lunar['lunar_year']}火旺磁场，分析四元素牌组（权杖/圣杯/宝剑/星币）的消长：火强则动，水弱则躁，土燥则裂，金熔则变；\n"
-                  f"三、对‘死神、高塔、恶魔’等重度牌意进行‘向死而生’的叙事性转化，揭示深层潜意识指引。\n"
-                  f"要求：话术具画面感，限制100字。")
-            a3_out = self.safe_generate_content(p3)
+            self._write(">> 正在激活分布式算力节点...\n", "system_tag")
+            results = {}
+            
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                # 核心修复：submit 参数必须包含 self.safe_generate_with_fallback, prompt, model_pool, delay
+                future_to_name = {
+                    executor.submit(self.safe_generate_with_fallback, t[1], model_pool, t[2]): t[0] 
+                    for t in tasks
+                }
+                
+                for future in future_to_name:
+                    name = future_to_name[future]
+                    # 获取该线程判定的文本和实际触发的模型
+                    res_text, used_model = future.result() 
+                    results[name] = res_text
+                    
+                    self._write(f"\n[{name}] 模型溯源: {used_model}\n", "system_tag")
+                    self._write(f"判定结论: {res_text}\n{'-'*40}\n")
 
-            # Agent 4: 智慧合参
-            self._write("【Agent 4】正在进行多维算力收敛...\n")
-            p4 = (f"你是【最高合参主祭司】。你的使命是将三个平行时空的推演结果收敛为唯一的生命指南。\n"
-                f"1. 八字({a1_out}) 占比40%：底层气数，决定了今年事业/感情的‘水位高低’。\n"
-                f"2. 紫微({a2_out}) 占比30%：空间人事，决定了风险和机会具体落在哪个‘宫位’。\n"
-                f"3. 塔罗({a3_out}) 占比10%：短期灵性，捕捉命主当下的‘心理状态’对因果的微调。\n"
-                f"4. 年份({lunar['lunar_year']}) 占比20%：时空背景，基于{lunar['lunar_year']}的特性，如2026丙午年‘离火九运、赤马躁动’，判定大环境对命主原局的压制或助燃。\n\n"
-                f"【冲突对冲规则】：\n"
-                f"- 若八字/紫微吉，年份背景/塔罗凶：定性为‘在动荡环境中逆势而上，虽有外部喧嚣，但根基稳固’。\n"
-                f"- 若八字/紫微凶，年份背景/塔罗吉：定性为‘虚火旺盛之局，当下的好运多为幻象，切忌贪大求全’。\n"
-                f"- 四者冲突时：以八字定调，以年份定气，以紫微定损益，以塔罗定破局点。\n\n"
-                f"【核心任务】：\n"
-                f"请基于上述权重分配，针对诉求（{info['question']}）编撰一段【命运剧本】。\n\n"
-                f"【叙事任务】：\n"
-                f"不要罗列术语。请以‘在接下来的时空里，你正在经历一段...’开头，针对诉求描述接下来会发生的好事与转机。\n"
-                f"因果线：从当下的念头(塔罗)出发 -> 经过2026大环境的洗礼 -> 遇到具体的事件节点(紫微) -> 最终回归天定好局(八字)。\n"
-                f"必须包含：具体月份、贵人特征、避灾动作、最终好结果。\n"
-                f"【输出要求】：\n"
-                f"一、📖【命运剧本】(沉浸式叙事，引导用户往好了想，往对了做)\n"
-                f"二、✨【福缘指引】(具体的方位、颜色、数字)\n"
-                f"三、🛡️【避忌暗礁】(为了剧本圆满，需要避开的具体行为)\n"
-                f"限制500字。")
-            a4_out = self.safe_generate_content(p4)
+            # 最终合参
+            self._write(f">> 正在根据 6:3:1 权重执行最终映射判定...\n", "system_tag")
+            p4 = (f"你是【最高决策主祭司】。用户当前最关心的问题是：【{info['question']}】。\n\n"
+                  f"### 📋 判定依据：\n"
+                  f"- 根基(60%)：{results['气数判定节点']}\n"
+                  f"- 现实(30%)：{results['时空变数节点']}\n"
+                  f"- 心理(10%)：{results['潜意识映射节点']}\n\n"
+                  
+                  f"### ⚖️ 裁决逻辑（必须执行）：\n"
+                  f"1. **权重合参**：如果根基判定(60%)显示‘稳’，而用户问题涉及‘是否会变’，则判定为‘不变’，其他变数解释为干扰。\n"
+                  f"2. **流年对冲**：结合{lunar['lunar_year']}年的特性。这种特性是对‘{info['question']}’起到了加速作用，还是摧毁作用？\n"
+                  
+                  f"### 🖋️ 最终命运剧本输出协议：\n"
+                  f"1. **确认本尊**：开头先以元神定性（如：‘作为戊土日主的你...’）。\n"
+                  f"2. **判决回应**：第一段必须用极度确定的语气，针对【{info['question']}】给出一个定论。\n"
+                  f"3. **时空叙事**：以‘在接下来的时空里...’开头。描述在 {lunar['lunar_year']} 年这个结论如何通过具体事件显现。\n"
+                  f"4. **指引避忌**：针对结论，给出一个必须做的动作和一个必须避开的雷区。\n"
+                  f"限制 500 字，禁止废话，必须高度扣题。")
+            
+            # 最终报告也使用 fallback 机制确保产出
+            a4_out, final_model = self.safe_generate_with_fallback(p4, model_pool)
 
-            self.master.after(0, lambda: self._final_display(a4_out, info))
+            self._write(f"\n【运算完成】终极判决由算力节点 {final_model} 签发。\n", "system_tag")
+            self.master.after(0, lambda: self._final_display(results, a4_out, info))
+
         except Exception as e:
             self._write(f"\n[算力中断]: {e}")
             self.master.after(0, lambda: self.run_btn.config(state="normal", text="✦ 重新开启推演 ✦"))
 
-    def _final_display(self, a4_out, info):
-        self.out_text.delete("1.0", tk.END) # 关键：清空之前的计算过程提示
-        
-        # 1. 瞬间展示抬头
-        self.out_text.insert(tk.END, f"尊敬的 {info['name']} 阁下：\n", "gold_tag")
-        self.out_text.insert(tk.END, f"针对您所关心的 “{info['question']}” \n")
-        self.out_text.insert(tk.END, f"主祭司已合参多维算力，结合 2026 丙午流年气场为您开启命运演化。\n")
-        self.out_text.insert(tk.END, f"{'—' * 60}\n\n")
-        
-        # 2. 调用极速分段打印 Agent 4 的结论
+    def _final_display(self, results, a4_out, info):
+        lunar = get_dynamic_lunar_params()
+        self.out_text.delete("1.0", tk.END)
+        self.out_text.insert(tk.END, f"尊敬的 {info['name']} 阁下：\n报告已生成。\n{'—' * 60}\n\n")
         self.paragraph_write(a4_out)
-        
-        # 3. 设置样式
-        self.out_text.tag_config("gold_tag", foreground="#D4AF37", font=("Microsoft YaHei", 12, "bold"))
-        
-        # 4. 恢复按钮状态
         self.run_btn.config(state="normal", text="✦ 开启新一轮推演 ✦")
 
     def paragraph_write(self, text):
-        """极速段落闪现，不磨叽"""
-        lines = text.split('\n')
-        for line in lines:
-            self.out_text.insert(tk.END, line + '\n')
-            self.out_text.update()
-            time.sleep(0.03) # 极快速度，几乎秒出
+        def _anim():
+            for char in text:
+                self.out_text.insert(tk.END, char)
+                self.out_text.see(tk.END)
+                self.out_text.update()
+                time.sleep(0.01)
+        threading.Thread(target=_anim, daemon=True).start()
 
-    def _write(self, msg):
-        self.master.after(0, lambda: self.out_text.insert(tk.END, msg))
+    def _write(self, msg, tag=None):
+        self.master.after(0, lambda: (self.out_text.insert(tk.END, msg, tag), self.out_text.see(tk.END)))
 
     def animate_stars(self):
         self.canvas.delete("s")
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
         if w < 10: w, h = 1100, 380
         cx, cy = w/2, h/2
-        if hasattr(self, 'canvas_btn_window'): self.canvas.coords(self.canvas_btn_window, cx, cy)
         t = time.time()
         for i in range(130):
             r = 10 + (i * 2.8)
