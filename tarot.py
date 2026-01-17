@@ -211,93 +211,71 @@ class OracleSystem:
             model_pool = get_intelligent_model_pool() 
             current_model = model_pool[0]  # 用于最终显示的默认标签
             lunar = get_dynamic_lunar_params()
-            sample_cards = random.sample(FULL_DECK, 9)
+            sample_cards = random.sample(FULL_DECK, 3)
             card_names = [f"{c}({random.choice(['正位', '逆位'])})" for c in sample_cards]
             
-            # --- 第一步：同步锚定逻辑基点（防止元神算错） ---
-            self._write(f">> 算力矩阵激活 | 当前首选算力: {current_model}\n", "system_tag")
-            
-            # 这里是专门用来“定性”的 Prompt，强制 AI 严谨推算
-            bazi_init_prompt = (
-                f"你是一位精通历法的排盘专家。命主出生：{info['birth']} {info['hour']}。\n"
-                f"【逻辑指令】：\n"
-                f"1. 确认身份：已知1998年5月19日为丙子日，请逻辑推导21日的日干支，明确元神五行（如戊土）。\n"
-                f"2. 确认流年：当前为 {lunar['lunar_year']} 年，请简述该年份干支对上述元神的基本磁场影响。\n"
-                f"只需要回复：‘【逻辑定性】：日主XX，流年XX对XX产生XX作用。’"
-            )
-            
-            # 拿到 AI 自行推导的元神结果（不再是 hardcode，而是 AI 的运算结果）
-            bazi_base_conclusion, used_anchor_model = self.safe_generate_with_fallback(bazi_init_prompt, model_pool)
-            self._write(f"【算力溯源: {used_anchor_model}】: {bazi_base_conclusion}\n", "gold_tag")
+            # --- 第一阶段：专家组会诊（元神校准 + 多维判定） ---
+            # 消耗 1 次额度，完成原有的前 4 个步骤
+            self._write(f">> 算力矩阵激活 | 首选算力: {current_model}\n", "system_tag")
+            self._write(f">> 正在进行元神校准与专家组联合会诊...\n", "system_tag")
 
             # --- 第二步：构造“强制扣题”的增强上下文 ---
             # 把 AI 自己算的元神喂回去
             refined_context = (
-                f"【身份唯一性协议】：\n"
-                f"- 命主：{info['name']} ({info['gender']})，出生于 {info['place']}, 日历计算采用 {info['calendar']}，出生年份和月份为 {info['birth']}，出生时间为 {info['hour']}。\n"
-                f"- 命理基准：{bazi_base_conclusion}（这是本次推演的绝对唯一坐标）。\n"
-                f"- 流年变量：{lunar['lunar_year']} 年，当前日期：{lunar['cur_date']}。\n"
-                f"- 核心判定任务：针对诉求【{info['question']}】进行专项推演。\n"
+                f"【核心参数输入】：\n"
+                f"- 命主：{info['name']} ({info['gender']})，出生地：{info['place']}\n"
+                f"- 生辰：{info['birth']} {info['hour']}（历法：{info['calendar']}）\n"
+                f"- 外部环境：当前日期 {lunar['cur_date']}，流年 {lunar['lunar_year']}（四化：{lunar['si_hua']}）\n"
+                f"- 灵性变量：塔罗牌阵 {card_names}\n\n"
+
+                f"【系统推演任务】：请针对诉求【{info['question']}】，执行以下严密的命理逻辑计算：\n\n"
+
+                f"1. **精准排盘与自校验 (逻辑根基)**：\n"
+                f"   - **时空校准**：首先根据出生地【{info['place']}】推算其经度偏移，将北京时间转化为“真太阳时”以确定准确时辰。\n"
+                f"   - **姓名能量对冲**：分析名讳【{info['name']}】的五行属性。判定该名字对八字原局是起到了‘化解冲突’、‘增强气势’还是‘平衡五行’的作用。并在[根基判定]中体现此加成。\n"
+                f"   - **干支推导**：已知1998年5月19日为丙子日，请以此为基准逻辑推演命主出生当日的干支（日柱/元神），并核对是否涉及节气交替导致的月份或年份变更。\n"
+                f"   - **输出要求**：必须以‘【逻辑定性】：元神[XX]金木水火土，日柱[XX]，时柱[XX]’作为开头。\n\n"
+
+                f"2. **多维深度判定 (6:3:1 权重分发)**：\n"
+                f"   - **[维度一：气数判定 (60%权重)]**：分析元神与流年 {lunar['lunar_year']} 的生克平衡。判定此时流年是喜用加持还是忌神对冲。这是决定成败的核心底层能量。\n"
+                f"   - **[维度二：时空变数 (30%权重)]**：结合紫微斗数流年四化【{lunar['si_hua']}】，分析该问题所在宫位（如财帛宫或官禄宫）的损益情况，判断现实中的变动概率。\n"
+                f"   - **[维度三：灵性映照 (10%权重)]**：解析塔罗牌 {card_names} 揭示的心理暗示。判定命主当下的潜意识驱动力是助力还是阻碍。\n\n"
+
+                f"3. **输出协议**：\n"
+                f"   - 禁止模棱两可，必须清晰列出以上三个判定的具体结论。\n"
+                f"   - 总字数控制在 400 字左右，逻辑严密，为后续主祭司的命运裁决提供硬核数据支持。"
             )
 
-            # 并发配置（带错峰 delay 以规避 Rate Limit）
-            tasks = [
-                ("气数判定节点", refined_context + 
-                  f"根据八字根基，分析{lunar['lunar_year']}年此元神的稳定性。"
-                  f"问题映射：{info['question']}。请直接给出基于气数的判定结论。限制120字。", 0.1),
-                
-                ("时空变数节点", refined_context +
-                  f"根据紫微流年四化 {lunar['si_hua']}，定位该问题涉及的人事损益。"
-                  f"问题映射：{info['question']}。请给出基于现实节点的变动概率。限制100字。", 1.2),
-                
-                ("潜意识映射节点", refined_context +
-                  f"基于九星阵 {card_names}，解析命主对此问题的心理驱动力。"
-                  f"问题映射：{info['question']}。给出直觉指引。限制100字。", 2.3)
-            ]
-
-            self._write(">> 正在激活分布式算力节点...\n", "system_tag")
-            results = {}
+            # 第一次调用：完成所有维度的原始计算
+            expert_raw_data, m1 = self.safe_generate_with_fallback(refined_context, model_pool)
             
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                # 核心修复：submit 参数必须包含 self.safe_generate_with_fallback, prompt, model_pool, delay
-                future_to_name = {
-                    executor.submit(self.safe_generate_with_fallback, t[1], model_pool, t[2]): t[0] 
-                    for t in tasks
-                }
-                
-                for future in future_to_name:
-                    name = future_to_name[future]
-                    # 获取该线程判定的文本和实际触发的模型
-                    res_text, used_model = future.result() 
-                    results[name] = res_text
-                    
-                    self._write(f"\n[{name}] 模型溯源: {used_model}\n", "system_tag")
-                    self._write(f"判定结论: {res_text}\n{'-'*40}\n")
+            # 提取元神结论展示给用户，增加确定感
+            logic_line = expert_raw_data.split('\n')[0] if '【' in expert_raw_data else "元神校准完成"
+            self._write(f"【算力溯源: {m1}】: {logic_line}\n", "gold_tag")
 
-            # 最终合参
+            # --- 第二阶段：终极总结与命运剧本创作 (核心请求 2) ---
+            self._write(f">> 移交主祭司执行 [逻辑验证] 与 [剧本演化]...\n", "system_tag")
+
+            # --- 步骤 2：主祭司终极合参 (执行 6:3:1 权重裁决) ---
             self._write(f">> 正在根据 6:3:1 权重执行最终映射判定...\n", "system_tag")
+            
             p4 = (f"你是【最高决策主祭司】。用户当前最关心的问题是：【{info['question']}】。\n\n"
-                  f"### 📋 判定依据：\n"
-                  f"- 根基(60%)：{results['气数判定节点']}\n"
-                  f"- 现实(30%)：{results['时空变数节点']}\n"
-                  f"- 心理(10%)：{results['潜意识映射节点']}\n\n"
-                  
-                  f"### ⚖️ 裁决逻辑（必须执行）：\n"
-                  f"1. **权重合参**：如果根基判定(60%)显示‘稳’，而用户问题涉及‘是否会变’，则判定为‘不变’，其他变数解释为干扰。\n"
-                  f"2. **流年对冲**：结合{lunar['lunar_year']}年的特性。这种特性是对‘{info['question']}’起到了加速作用，还是摧毁作用？\n"
-                  
+                  f"### 📋 专家组判定依据：\n{expert_raw_data}\n\n"
+                  f"### ⚖️ 裁决逻辑（必须强制执行）：\n"
+                  f"1. **权重合参**：根基(60%)、现实(30%)、心理(10%)。若[根基判定]显示‘稳/吉’，而用户问题涉及‘是否会变/是否有灾’，则必须判定为‘稳/无忧’，即便现实变数中有小干扰，也应解释为磨炼而非结果。\n"
+                  f"2. **流年对冲**：结合 {lunar['lunar_year']} 年的特性，判断其对【{info['question']}】是起到‘推波助澜’还是‘阻碍摧毁’的作用。\n\n"
+                  f"3. **变量定序**：必须遵循‘命大于卦’原则。塔罗牌阵仅代表命主当下的[心力状态]，绝不可因一张坏牌就全盘否定八字根基（60%）和姓名化解力。若根基稳固，即便牌阵显示‘危机’，也必须定论为‘有惊无险’而非‘彻底终结’。"
                   f"### 🖋️ 最终命运剧本输出协议：\n"
-                  f"1. **确认本尊**：开头先以元神定性（如：‘作为戊土日主的你...’）。\n"
+                  f"1. **确认本尊**：开头先以元神定性（如：‘作为XX日主的你...’）。\n"
                   f"2. **判决回应**：第一段必须用极度确定的语气，针对【{info['question']}】给出一个定论。\n"
                   f"3. **时空叙事**：以‘在接下来的时空里...’开头。描述在 {lunar['lunar_year']} 年这个结论如何通过具体事件显现。\n"
                   f"4. **指引避忌**：针对结论，给出一个必须做的动作和一个必须避开的雷区。\n"
                   f"限制 500 字，禁止废话，必须高度扣题。")
             
-            # 最终报告也使用 fallback 机制确保产出
-            a4_out, final_model = self.safe_generate_with_fallback(p4, model_pool)
+            final_report, m2 = self.safe_generate_with_fallback(p4, model_pool)
 
-            self._write(f"\n【运算完成】终极判决由算力节点 {final_model} 签发。\n", "system_tag")
-            self.master.after(0, lambda: self._final_display(results, a4_out, info))
+            self._write(f"\n【运算完成】终极判决由算力节点 {m2} 签发。\n", "system_tag")
+            self.master.after(0, lambda: self._final_display({}, final_report, info))
 
         except Exception as e:
             self._write(f"\n[算力中断]: {e}")
@@ -313,9 +291,8 @@ class OracleSystem:
     def paragraph_write(self, text):
         def _anim():
             for char in text:
-                self.out_text.insert(tk.END, char)
-                self.out_text.see(tk.END)
-                self.out_text.update()
+                # 使用 after 将 UI 更新抛回主线程
+                self.master.after(0, lambda c=char: (self.out_text.insert(tk.END, c), self.out_text.see(tk.END)))
                 time.sleep(0.01)
         threading.Thread(target=_anim, daemon=True).start()
 
