@@ -134,57 +134,48 @@ class OracleSystem:
         tk.Label(left_pillar, text="🔱 维度参数矩阵", fg=self.C_GOLD, bg="#0D0D1A", font=("Microsoft YaHei", 18, "bold")).pack(pady=(20, 30))
 
         self.name_ent = self._create_input_pair(left_pillar, "✦ 您的姓名:", "无姓名")
-        self.place_ent = self._create_input_pair(left_pillar, "✦ 您的出生地:", "XX省 XX市 XX区")
+        self.place_ent = self._create_input_pair(left_pillar, "✦ 您的出生地:", "上海市 黄浦区")
         
-        # --- 修改1：极性与历法 ---
+        # --- 极性与历法 ---
         tk.Label(left_pillar, text="✦ 极性与历法:", fg="#999", bg="#0D0D1A", font=("Microsoft YaHei", 11)).pack(anchor="w", pady=(15,0))
         f_row2 = tk.Frame(left_pillar, bg="#0D0D1A")
         f_row2.pack(fill="x", pady=10)
-        
-        # 关键点：添加 font=("Microsoft YaHei", 13) 和 ipady=6
         self.gender_cb = ttk.Combobox(f_row2, values=["乾 (男)", "坤 (女)"], state="readonly", font=("Microsoft YaHei", 13))
         self.gender_cb.set("乾 (男)")
         self.gender_cb.pack(side="left", expand=True, padx=(0,5), ipady=6) 
-        
         self.calendar_cb = ttk.Combobox(f_row2, values=["公历", "农历"], state="readonly", font=("Microsoft YaHei", 13))
         self.calendar_cb.set("公历")
         self.calendar_cb.pack(side="right", expand=True, ipady=6)
 
-        # --- 修改2：年/月/日 ---
-        tk.Label(left_pillar, text="✦ 降生时刻 (年/月/日):", fg="#999", bg="#0D0D1A", font=("Microsoft YaHei", 11)).pack(anchor="w", pady=(15,0))
+        # --- 降生日期 ---
+        tk.Label(left_pillar, text="✦ 降生日期 (年/月/日):", fg="#999", bg="#0D0D1A", font=("Microsoft YaHei", 11)).pack(anchor="w", pady=(15,0))
         f_row3 = tk.Frame(left_pillar, bg="#0D0D1A")
         f_row3.pack(fill="x", pady=10)
-        
         self.year_cb = ttk.Combobox(f_row3, values=[str(y) for y in range(1940, 2027)], width=6, font=("Microsoft YaHei", 13))
         self.year_cb.set("1996")
         self.year_cb.pack(side="left", ipady=6)
-        
         self.month_cb = ttk.Combobox(f_row3, values=[f"{m:02d}" for m in range(1, 13)], width=4, font=("Microsoft YaHei", 13))
         self.month_cb.set("03")
         self.month_cb.pack(side="left", padx=5, ipady=6)
-        
         self.day_cb = ttk.Combobox(f_row3, values=[f"{d:02d}" for d in range(1, 32)], width=4, font=("Microsoft YaHei", 13))
         self.day_cb.set("05")
         self.day_cb.pack(side="left", ipady=6)
-        
-        # --- 真太阳时校准区 ---
+
+        # --- 具体时辰 (移至日期下方，逻辑连贯) ---
+        tk.Label(left_pillar, text="✦ 降生时辰:", fg="#999", bg="#0D0D1A", font=("Microsoft YaHei", 11)).pack(anchor="w", pady=(15,0))
+        self.hour_cb = ttk.Combobox(left_pillar, values=ZODIAC_HOURS, state="readonly", font=("Microsoft YaHei", 13))
+        self.hour_cb.set("巳时 (09:00-11:00)")
+        self.hour_cb.pack(fill="x", pady=10, ipady=6)
+
+        # --- 真太阳时校准 (紧跟时辰) ---
         f_sun = tk.Frame(left_pillar, bg="#0D0D1A")
-        f_sun.pack(fill="x", pady=(5, 0))
-        
+        f_sun.pack(fill="x", pady=(5, 15))
         self.use_true_sun = tk.BooleanVar(value=False)
-        self.sun_check = tk.Checkbutton(f_sun, text="校准真太阳时", variable=self.use_true_sun,
+        self.sun_check = tk.Checkbutton(f_sun, text="校准真太阳时 (依据经度偏移)", variable=self.use_true_sun,
                                         bg="#0D0D1A", fg=self.C_GOLD, selectcolor="#0D0D1A",
                                         activebackground="#0D0D1A", activeforeground=self.C_GOLD,
                                         font=("Microsoft YaHei", 10))
         self.sun_check.pack(side="left")
-
-        # --- 修改3：具体时辰 ---
-        self.hour_cb = ttk.Combobox(left_pillar, values=ZODIAC_HOURS, state="readonly", font=("Microsoft YaHei", 13))
-        self.hour_cb.set("巳时 (09:00-11:00)")
-        self.hour_cb.pack(fill="x", pady=15, ipady=6)
-
-        self.status_box = tk.Label(left_pillar, text="[维度同步已就绪]", fg="#444", bg="#0D0D1A", font=("Consolas", 10))
-        self.status_box.pack(side="bottom", pady=25)
 
         # --- 后续右侧和底部逻辑保持不变 ---
         right_panel = tk.Frame(mid_container, bg="#08080C", bd=1, relief="flat")
@@ -264,32 +255,55 @@ class OracleSystem:
             threading.Thread(target=self._run_chat_round, args=(info,), daemon=True).start()
 
     def _run_first_round(self, info):
-        """第一阶段：专家组演算并建立骨架 (恢复原本的权重与 JSON 结构)"""
+        """第一阶段：专家组演算并建立骨架 (完整整合：气数校验 + 名号中和 + 结论先行)"""
         try:
+            # 1. 获取动态背景
             lunar = get_dynamic_lunar_params()
             sample_cards = random.sample(FULL_DECK, 3)
             card_names = [f"{c}({random.choice(['正位', '逆位'])})" for c in sample_cards]
-            self._write(">> 正在点燃星火，召集中西先哲建立命理数据矩阵...\n", "sys_tag")
+            
+            # 2. 真太阳时指令 (基于出生地决定)
+            sun_active = info.get("is_true_sun", False)
+            sun_logic = (
+                f"【时空校准指示】：用户出生地[{info['place']}]，校准状态:{sun_active}。 "
+                "若开启，请务必根据经度将北京时间折算为真太阳时，这是干支气数定性的物理基础。"
+            )
 
-            # 专家组 JSON 获取
+            self._write(">> 正在点燃星火，召集先哲建立命理数据矩阵...\n", "sys_tag")
+
+            # 3. 专家组 JSON 逻辑 (核心：干支校验 + 名号中和)
             expert_p = (
-                f"针对诉求【{info['question']}】，分析变量并输出 JSON。\n"
-                f"命主：{info['name']}, {info['gender']}, 出生地：{info['place']}, 生辰：{info['birth']} {info['hour']},如果 is_true_sun 为 True，请根据命主的出生地【{info['place']}】计算其经度与北京时间的偏差，先折算为真太阳时，再以此进行八字排盘。\n"
-                f"流年：{lunar['lunar_year']}, 四化：{lunar['si_hua']}。塔罗：{card_names}。\n"
-                "严格输出 JSON 结构：{\"bazi\":{\"element\":\"元神\",\"desc\":\"根基\"}, \"ziwei\":{\"desc\":\"现实\"}, \"tarot\":{\"desc\":\"心态\"}, \"conflict\":\"矛盾点\"}"
+                f"你是一个拥有上帝视角的命理演算矩阵。当前核心任务：回答用户提问【{info['question']}】。\n"
+                f"命主数据：{info['name']}, {info['gender']}, 原始生辰{info['birth']} {info['hour']}, 出生地{info['place']} (校准:{sun_active})。\n"
+                f"环境背景：流年{lunar['lunar_year']}, 塔罗意向{card_names}。\n\n"
+                "【推演逻辑协议】：\n"
+                "1. **直接定性**：严禁模棱两可。针对提问直接给结论（好坏/成败/层级）。\n"
+                "2. **权重支撑（辅助特效）**：按[定数 > 姓名中和 > 流年 > 塔罗]权重分析结论原因。例如：名字因中和了戊土的燥性而判定为好。\n"
+                "3. **拒绝废话**：所有分析必须紧扣【{info['question']}】，不相关的命理知识点一律不谈。\n"
+                "4. **路径建议**：针对该问题提供 A/B 两个行动方向，用于优化或规避结论中的风险点。\n\n"
+                "输出 JSON：{\"oracle_spark\":\"对问题的硬核一句话结论\", \"metrics\":\"关键评分/指标\", "
+                "\"logic_support\":\"支撑结论的五行/名号中和逻辑\", \"path_a\":\"针对问题的优化建议\", \"path_b\":\"针对问题的风险对策\"}"
             )
             raw_json, m1 = self.safe_generate_with_fallback(expert_p)
             
+            if not raw_json or "Error" in raw_json:
+                raise Exception("API 额度不足或响应超时，请检查 Token 状态。")
+
             try:
                 clean_j = raw_json.replace("```json", "").replace("```", "").strip()
                 self.master_data = json.loads(clean_j)
             except:
-                self.master_data = {"error": "解析失败", "raw": raw_json}
+                self.master_data = {"error": "解析失败", "oracle_spark": "抱歉，数据解析出错，请稍后重试。"}
 
-            # 主祭司拟人化合成报告
+            # 4. 主祭司拟人化合成报告 (深度中和版)
             synthesis_p = (
-                f"你是主祭司。已知背景矩阵：{json.dumps(self.master_data, ensure_ascii=False)}。\n"
-                f"用户祈愿：{info['question']}。请根据元神开场，给出定论、时空叙事及避忌指南。500字。"
+                f"你是主祭司。已知推演结论：{json.dumps(self.master_data, ensure_ascii=False)}。\n"
+                f"用户祈愿：【{info['question']}】\n\n"
+                f"【回复准则】：\n"
+                f"1. **开篇见血**：第一句必须直接回答核心问题。引用 '{self.master_data.get('oracle_spark')}'。如果用户问名字，就直接说名字带来的影响。\n"
+                f"2. **逻辑背书（辅助特效）**：用最简短的语言说明这个结论是基于什么算出来的（提及五行中和或定数权重）。让用户觉得你的回答有理有据，而非瞎猜。\n"
+                f"3. **路径实操**：针对问题给建议。不强行引导改名，只谈如何通过 A 或 B 方案让事情变得更好。\n"
+                f"4. **严禁答非所问**：如果用户没问性格，就少谈性格；没问财运，就少谈钱。始终围着问题转。"
             )
             final_report, m2 = self.safe_generate_with_fallback(synthesis_p)
             
@@ -298,30 +312,48 @@ class OracleSystem:
             self._final_display(final_report, m2)
 
         except Exception as e:
-            self._write(f"\n[推演中断]: {e}", "sys_tag")
-            self.run_btn.config(state="normal", text="✦ 重启推演 ✦")
+            # 拒绝玄学文案，直接报错
+            self._write(f"\n[系统错误]: {str(e)}\n", "sys_tag")
+            self.run_btn.config(state="normal", text="✦ 重新推演 ✦")
 
     def _run_chat_round(self, info):
-        """第二阶段：追问模式 (基于记忆和 JSON 骨架对话)"""
+        """第二阶段：追问模式 (基于记忆和权重逻辑对话)"""
         try:
             history_str = "\n".join([f"{h['role']}: {h['content']}" for h in self.chat_history[-2:]])
             prompt = (
-                f"你是命理导师。已知背景数据：{json.dumps(self.master_data)}\n"
+                f"你是主祭司，命主的提灯人。已知背景：{json.dumps(self.master_data)}\n"
                 f"上下文：{history_str}\n"
                 f"用户追问：【{info['question']}】\n"
-                "请基于已知矩阵深度回答，口吻保持一致。"
+                f"【对话逻辑】：\n"
+                f"1. 坚持‘定数为主，名字为辅，塔罗为象’的原则回答。如果用户不解，再次解释名字是如何在定数中起到‘中和’作用的。\n"
+                f"2. 保持温暖且专业的语调，引导用户看清选择权在自己手中。"
             )
             response, m = self.safe_generate_with_fallback(prompt)
+            if not response:
+                raise Exception("没 Token 了，无法生成回复。")
             self.chat_history.append({"role": "user", "content": info["question"]})
             self.chat_history.append({"role": "model", "content": response})
             self._final_display(response, m, is_chat=True)
         except Exception as e:
-            self._write(f"\n[算力波动]: {e}", "sys_tag")
+            self._write(f"\n[追问失败]: {str(e)}", "sys_tag")
             self.run_btn.config(state="normal", text="✦ 继续追问 ✦")
 
     def _final_display(self, text, model_name, is_chat=False):
-        if not is_chat: self._write("--- 深度命理推演报告 ---\n\n", "gold_tag")
-        self._write(f"[维度签发: {model_name}]\n", "sys_tag")
+        """最终显示：结论置顶 + 逻辑透明化"""
+        if not is_chat: 
+            self._write("--- 深度命理推演报告 ---\n", "gold_tag")
+            spark = self.master_data.get("oracle_spark", "演算完成")
+            metrics = self.master_data.get("metrics", "")
+            # 显性化姓名中和逻辑
+            name_effect = self.master_data.get("name_effect", "正在分析")
+            
+            self._write(f"◈ 核心神谕：{spark}\n", "gold_tag")
+            self._write(f"◈ 维度指标：{metrics}\n", "sys_tag")
+            self._write(f"◈ 名号中和：{name_effect}\n", "sys_tag")
+            self._write("◈ 逻辑基准：定数 > 姓名中和 > 运势 > 塔罗\n", "sys_tag")
+            self._write("--------------------------------\n\n", "sys_tag")
+
+        self._write(f"[运行模型: {model_name}]\n", "sys_tag")
         
         def _anim():
             for char in text:
@@ -339,14 +371,41 @@ class OracleSystem:
     def animate_stars(self):
         self.canvas.delete("star")
         w = self.canvas.winfo_width()
-        if w < 10: w = 1100
+        if w < 10: w = 1100  # 初始保护宽度
         h = 100
         t = time.time()
-        for i in range(50):
-            x = (math.sin(t * 0.1 + i) * 0.4 + 0.5) * w
-            y = (math.cos(t * 0.2 + i * 2) * 0.3 + 0.5) * h
-            size = random.uniform(0.5, 2.0)
-            self.canvas.create_oval(x, y, x+size, y+size, fill=self.C_GOLD, outline="", tags="star")
+        
+        # 增加一点深蓝色调的星星，配合金色，显得有层次感
+        star_colors = [self.C_GOLD, "#ADD8E6", "#FFFACD", "#708090"] 
+        
+        for i in range(40):  # 数量稍微减少，强调质量
+            # 这里的逻辑改为：每颗星都有自己的固定轨道半径和旋转速度
+            # 使用 i 作为偏移量，让它们分布在不同的“星轨”上
+            speed = 0.05 + (i % 5) * 0.02
+            radius_x = (i * 20) % (w // 2) + 50
+            radius_y = (i * 5) % 40 + 10
+            
+            # 计算平滑的星轨坐标
+            center_x = w / 2
+            center_y = h / 2
+            
+            angle = t * speed + i  # 随时间匀速转动
+            x = center_x + math.sin(angle) * radius_x
+            y = center_y + math.cos(angle * 0.5) * radius_y # Y轴慢一点，形成椭圆轨道
+            
+            # 星星的大小随位置微弱变化，产生呼吸感
+            size = 1.0 + math.sin(t + i) * 0.5
+            color = star_colors[i % len(star_colors)]
+            
+            # 绘制星星
+            self.canvas.create_oval(
+                x, y, x + size, y + size, 
+                fill=color, 
+                outline="", 
+                tags="star"
+            )
+            
+        # 保持 50ms 一次的刷新率，保证平滑度
         self.master.after(50, self.animate_stars)
 
 if __name__ == "__main__":
