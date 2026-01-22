@@ -186,16 +186,17 @@ class OracleSystem:
         self.scrollbar = ttk.Scrollbar(right_panel, orient="vertical", command=self.out_text.yview)
         self.out_text.configure(yscrollcommand=self.scrollbar.set)
         # 用户提问：金黄色，靠右 (rmargin 留一点边距，lmargin1/2 留出左侧大片空白)
+        # 用户提问：金黄色，靠右对齐
         self.out_text.tag_configure("user_msg", 
                                     justify='right', 
                                     rmargin=50,       
-                                    lmargin1=400,     # 把金色的字推向最右侧
+                                    lmargin1=400,     # 强制左侧留白
                                     lmargin2=400, 
-                                    spacing1=40,      # 问题上方的留白
+                                    spacing1=40,      
                                     foreground=self.C_GOLD, 
                                     font=("Microsoft YaHei", 12, "bold"))
         
-        # 祭司回复：纯白色，靠左 (rmargin 留出右侧空间)
+        # 祭司回复：纯白色，靠左对齐
         self.out_text.tag_configure("boss_msg", 
                                     justify='left', 
                                     lmargin1=50, 
@@ -204,12 +205,16 @@ class OracleSystem:
                                     spacing1=15, 
                                     foreground="#FFFFFF", 
                                     font=("Microsoft YaHei", 13))
+        
+        # 金色强调：用于展示排盘数据
+        self.out_text.tag_configure("gold_tag", 
+                                    justify='left',
+                                    lmargin1=50,
+                                    lmargin2=50,
+                                    foreground=self.C_GOLD, 
+                                    font=("Microsoft YaHei", 13, "bold"))
         self.out_text.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
-
-        self.out_text.tag_config("gold_tag", foreground=self.C_GOLD, font=("Microsoft YaHei", 14, "bold"))
-        self.out_text.tag_config("sys_tag", foreground="#666", font=("Consolas", 11))
-        self.out_text.tag_config("user_tag", foreground="#4E9CAF", font=("Microsoft YaHei", 12, "italic"))
 
         bottom_bar = tk.Frame(self.master, bg="#101025", height=130)
         bottom_bar.grid(row=2, column=0, sticky="ew")
@@ -232,6 +237,17 @@ class OracleSystem:
                                  padx=40, relief="flat", cursor="hand2")
         self.run_btn.pack(side="right")
         
+    def _lock_input(self):
+        """锁定：清空输入框并禁用，防止用户乱点"""
+        self.quest_ent.config(state="disabled", background="#121212") 
+        self.run_btn.config(state="disabled", text="✦ 正在洞察天机...")
+
+    def _unlock_input(self):
+        """解锁：恢复输入功能"""
+        self.quest_ent.config(state="normal", background=self.C_INPUT_BG)
+        self.quest_ent.delete(0, tk.END) # 确保清空
+        self.run_btn.config(state="normal", text="✦ 继续追问 ✦")
+        self.quest_ent.focus_set() # 自动聚焦，方便直接打字
 
     def _create_input_pair(self, parent, label, default):
         tk.Label(parent, text=label, fg="#999", bg="#0D0D1A", font=("Microsoft YaHei", 11)).pack(anchor="w", pady=(20, 0))
@@ -275,6 +291,13 @@ class OracleSystem:
 
     def _run_first_round(self, info):
         """第一阶段：专家组演算并建立骨架 (完整整合：气数校验 + 名号中和 + 结论先行)"""
+        # A. 暂存当前问题（供显示使用）
+        self.current_q = self.quest_ent.get().strip()
+        
+        # B. 立即执行清空和禁用
+        self.quest_ent.delete(0, tk.END)
+        self.quest_ent.config(state="disabled", background="#121212") # 变灰
+        self.run_btn.config(state="disabled", text="✦ 正在洞察天机...")
         try:
             # 1. 动态变量准备
             lunar = get_dynamic_lunar_params()
@@ -340,6 +363,8 @@ class OracleSystem:
 
     def _run_chat_round(self, info):
         """第二阶段：追问模式 (基于记忆和权重逻辑对话)"""
+        self.current_q = info["question"] # 确保 final_display 能拿到追问的内容
+        self.master.after(0, self._lock_input)
         try:
             history_str = "\n".join([f"{h['role']}: {h['content']}" for h in self.chat_history[-2:]])
             prompt = (
@@ -358,29 +383,27 @@ class OracleSystem:
             self._final_display(response, m, is_chat=True)
         except Exception as e:
             self._write(f"\n[追问失败]: {str(e)}", "sys_tag")
-            self.run_btn.config(state="normal", text="✦ 继续追问 ✦")
+            self.master.after(0, self._unlock_input) # 失败也要解锁，不然输入框就废了
 
     def _final_display(self, text, model_name, is_chat=False):
-        """纯净对谈：金黄提问右置，纯白回复左置，旧内容清场"""
+        """剧场式交互：金黄提问右置，自动锁定与解锁输入"""
         
-        # 1. 把之前的对话推上去，给这一轮留出整个屏幕的视觉空间
+        # 1. 物理清场
         self.out_text.insert(tk.END, "\n" * 25) 
 
-        # 2. 获取用户原话（不加任何前缀标签）
-        user_q = self.quest_ent.get().strip()
-        if not user_q: user_q = "请求指引"
+        # 2. 获取用户原话 
+        # 注意：这里我们使用 self.current_q，因为它在输入框被禁用前就已经暂存了
+        user_q = getattr(self, 'current_q', "请求指引")
         
         # 3. 在右侧显示金黄色的用户原话
         self.out_text.insert(tk.END, f"{user_q}\n", "user_msg")
-        self.out_text.insert(tk.END, "\n", "sys_tag") 
+        self.out_text.insert(tk.END, "\n", "boss_msg") 
 
-        # 4. 演算底座展示（仅在首轮通过白色文字混入，保持专业感）
+        # 4. 演算底座展示
         if not is_chat:
             bazi = self.master_data.get('data_foundation', '')
             name = self.master_data.get('name_logic', '')
             spark = self.master_data.get("oracle_spark", "")
-            
-            # 将依据直接作为对话的序章，用白色显示，维持干净的界面
             evidence = (f"◈ 演算底座：{bazi}\n"
                         f"◈ 名号能量：{name}\n"
                         f"◈ 核心判定：{spark}\n\n")
@@ -393,19 +416,16 @@ class OracleSystem:
             for char in text:
                 current_scroll = self.out_text.yview()
                 is_at_bottom = current_scroll[1] >= 0.95
-                
-                # 统一使用 boss_msg 纯白显示
                 self.master.after(0, lambda c=char: self.out_text.insert(tk.END, c, "boss_msg"))
                 
                 if is_at_bottom:
                     self.master.after(0, lambda: self.out_text.see(tk.END))
                 time.sleep(0.01)
             
-            self.master.after(0, lambda: self.out_text.insert(tk.END, "\n\n", "boss_msg"))
-            self.master.after(0, lambda: self.run_btn.config(state="normal", text="✦ 继续追问 ✦"))
+            # --- 关键修改：生成结束，调用解锁逻辑 ---
+            self.master.after(0, self._unlock_input)
 
         threading.Thread(target=_anim, daemon=True).start()
-        self.quest_ent.delete(0, tk.END)
 
     def _write(self, msg, tag=None):
         self.master.after(0, lambda: (self.out_text.insert(tk.END, msg, tag), self.out_text.see(tk.END)))
