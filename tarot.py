@@ -185,6 +185,25 @@ class OracleSystem:
                                 padx=30, pady=30, bd=0, spacing2=10)
         self.scrollbar = ttk.Scrollbar(right_panel, orient="vertical", command=self.out_text.yview)
         self.out_text.configure(yscrollcommand=self.scrollbar.set)
+        # 用户提问：金黄色，靠右 (rmargin 留一点边距，lmargin1/2 留出左侧大片空白)
+        self.out_text.tag_configure("user_msg", 
+                                    justify='right', 
+                                    rmargin=50,       
+                                    lmargin1=400,     # 把金色的字推向最右侧
+                                    lmargin2=400, 
+                                    spacing1=40,      # 问题上方的留白
+                                    foreground=self.C_GOLD, 
+                                    font=("Microsoft YaHei", 12, "bold"))
+        
+        # 祭司回复：纯白色，靠左 (rmargin 留出右侧空间)
+        self.out_text.tag_configure("boss_msg", 
+                                    justify='left', 
+                                    lmargin1=50, 
+                                    lmargin2=50, 
+                                    rmargin=150,      
+                                    spacing1=15, 
+                                    foreground="#FFFFFF", 
+                                    font=("Microsoft YaHei", 13))
         self.out_text.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
@@ -257,53 +276,56 @@ class OracleSystem:
     def _run_first_round(self, info):
         """第一阶段：专家组演算并建立骨架 (完整整合：气数校验 + 名号中和 + 结论先行)"""
         try:
-            # 1. 获取动态背景
+            # 1. 动态变量准备
             lunar = get_dynamic_lunar_params()
-            sample_cards = random.sample(FULL_DECK, 3)
+            sample_cards = random.sample(FULL_DECK, 9)
             card_names = [f"{c}({random.choice(['正位', '逆位'])})" for c in sample_cards]
             
-            # 2. 真太阳时指令 (基于出生地决定)
             sun_active = info.get("is_true_sun", False)
             sun_logic = (
                 f"【时空校准指示】：用户出生地[{info['place']}]，校准状态:{sun_active}。 "
-                "若开启，请务必根据经度将北京时间折算为真太阳时，这是干支气数定性的物理基础。"
+                "若开启，请先计算真太阳时，作为干支定性的物理基准。"
             )
 
             self._write(">> 正在点燃星火，召集先哲建立命理数据矩阵...\n", "sys_tag")
 
             # 3. 专家组 JSON 逻辑 (核心：干支校验 + 名号中和)
             expert_p = (
-                f"你是一个拥有上帝视角的命理演算矩阵。当前核心任务：回答用户提问【{info['question']}】。\n"
-                f"命主数据：{info['name']}, {info['gender']}, 原始生辰{info['birth']} {info['hour']}, 出生地{info['place']} (校准:{sun_active})。\n"
+                f"你是一个拥有严谨逻辑的命理演算矩阵。当前核心任务：回答用户提问【{info['question']}】。\n"
+                f"{sun_logic}\n"
+                f"命主数据：{info['name']}, {info['gender']}, 生辰{info['birth']} {info['hour']}。\n"
                 f"环境背景：流年{lunar['lunar_year']}, 塔罗意向{card_names}。\n\n"
-                "【推演逻辑协议】：\n"
-                "1. **直接定性**：严禁模棱两可。针对提问直接给结论（好坏/成败/层级）。\n"
-                "2. **权重支撑（辅助特效）**：按[定数 > 姓名中和 > 流年 > 塔罗]权重分析结论原因。例如：名字因中和了戊土的燥性而判定为好。\n"
-                "3. **拒绝废话**：所有分析必须紧扣【{info['question']}】，不相关的命理知识点一律不谈。\n"
-                "4. **路径建议**：针对该问题提供 A/B 两个行动方向，用于优化或规避结论中的风险点。\n\n"
-                "输出 JSON：{\"oracle_spark\":\"对问题的硬核一句话结论\", \"metrics\":\"关键评分/指标\", "
-                "\"logic_support\":\"支撑结论的五行/名号中和逻辑\", \"path_a\":\"针对问题的优化建议\", \"path_b\":\"针对问题的风险对策\"}"
+                "【执行协议 - 必须强制执行验证】：\n"
+                "1. **底层排盘验证 (data_foundation)**：必须先列出日元干支及月令属性（如：戊土生于午月，身旺燥烈）。这是结论的化验单。\n"
+                "2. **姓名中和分析 (name_logic)**：分析姓名【{info['name']}】对上述命局是‘调侯润局’还是‘加剧偏枯’。名字不改，只求中和。\n"
+                "3. **权重博弈**：按[定数 > 姓名中和 > 流年 > 塔罗]权重定性。若塔罗与八字冲突，以八字原局定性。\n"
+                "4. **直接定性 (oracle_spark)**：15字以内硬结论，针对提问直接给结果，严禁绕圈子。\n\n"
+                "输出严格 JSON：{\"data_foundation\":\"核心排盘及月令状态\", \"name_logic\":\"名字对原局的中和特效说明\", "
+                "\"oracle_spark\":\"对问题的硬核一句话结论\", \"metrics\":\"核心评分/指标\", "
+                "\"path_a\":\"针对该问题的优化路径\", \"path_b\":\"针对该问题的风险对策\"}"
             )
             raw_json, m1 = self.safe_generate_with_fallback(expert_p)
             
             if not raw_json or "Error" in raw_json:
-                raise Exception("API 额度不足或响应超时，请检查 Token 状态。")
+                raise Exception("API 未响应或 Token 耗尽，请检查网络或额度。")
 
             try:
                 clean_j = raw_json.replace("```json", "").replace("```", "").strip()
                 self.master_data = json.loads(clean_j)
             except:
-                self.master_data = {"error": "解析失败", "oracle_spark": "抱歉，数据解析出错，请稍后重试。"}
+                self.master_data = {"error": "解析失败", "oracle_spark": "抱歉，演算数据解析出错，请重试。"}
 
             # 4. 主祭司拟人化合成报告 (深度中和版)
             synthesis_p = (
-                f"你是主祭司。已知推演结论：{json.dumps(self.master_data, ensure_ascii=False)}。\n"
-                f"用户祈愿：【{info['question']}】\n\n"
-                f"【回复准则】：\n"
-                f"1. **开篇见血**：第一句必须直接回答核心问题。引用 '{self.master_data.get('oracle_spark')}'。如果用户问名字，就直接说名字带来的影响。\n"
-                f"2. **逻辑背书（辅助特效）**：用最简短的语言说明这个结论是基于什么算出来的（提及五行中和或定数权重）。让用户觉得你的回答有理有据，而非瞎猜。\n"
-                f"3. **路径实操**：针对问题给建议。不强行引导改名，只谈如何通过 A 或 B 方案让事情变得更好。\n"
-                f"4. **严禁答非所问**：如果用户没问性格，就少谈性格；没问财运，就少谈钱。始终围着问题转。"
+                f"你是主祭司，一个洞悉时空、极具共情能力的命运提灯人。你的任务是针对【{info['question']}】与命主进行深度谈话。\n"
+                f"已知数据底座（运算结果）：{json.dumps(self.master_data, ensure_ascii=False)}。\n\n"
+                f"【谈话艺术准则】：\n"
+                f"1. **破题结论**：开篇第一句话就要直接回应对方的祈愿 '{self.master_data.get('oracle_spark')}'。不寒暄，直接给对方一个笃定的支点。\n"
+                f"2. **嵌入式验证（不生硬）**：在对话中自然地提到对方的气数底座 '{self.master_data.get('data_foundation')}'。你要通过描述五行强弱来解释他当下的心境或处境。例如：‘我看你命格中戊土生于夏日，这种燥烈感是你这段时间感到焦虑的底层原因...’。\n"
+                f"3. **名号的能量场引导**：将名字 '{self.master_data.get('name_logic')}' 视为他已拥有的特殊能量。告诉他这股能量如何与他的命局（定数）产生共振，重点在于‘如何调动这股力量去解决他问的问题’，而非评价好坏。\n"
+                f"4. **双向路径决策**：基于上述运算逻辑，给出 A 方案的进取和 B 方案的守成。分析这两种路径在他的气数背景下会产生怎样的后续回响，引导他做出最契合自身的选择。\n"
+                f"5. **文学性与共鸣**：语调要睿智、通透且带有哲思。像老朋友在深夜指着星图谈心：‘你看，星星是这样运行的，而你的路可以这样走。’\n"
+                f"6. **绝对扣题**：所有的推演（八字、姓名、塔罗）必须最终收束在【{info['question']}】的解答上，严禁答非所问。"
             )
             final_report, m2 = self.safe_generate_with_fallback(synthesis_p)
             
@@ -339,29 +361,50 @@ class OracleSystem:
             self.run_btn.config(state="normal", text="✦ 继续追问 ✦")
 
     def _final_display(self, text, model_name, is_chat=False):
-        """最终显示：结论置顶 + 逻辑透明化"""
-        if not is_chat: 
-            self._write("--- 深度命理推演报告 ---\n", "gold_tag")
-            spark = self.master_data.get("oracle_spark", "演算完成")
-            metrics = self.master_data.get("metrics", "")
-            # 显性化姓名中和逻辑
-            name_effect = self.master_data.get("name_effect", "正在分析")
-            
-            self._write(f"◈ 核心神谕：{spark}\n", "gold_tag")
-            self._write(f"◈ 维度指标：{metrics}\n", "sys_tag")
-            self._write(f"◈ 名号中和：{name_effect}\n", "sys_tag")
-            self._write("◈ 逻辑基准：定数 > 姓名中和 > 运势 > 塔罗\n", "sys_tag")
-            self._write("--------------------------------\n\n", "sys_tag")
+        """纯净对谈：金黄提问右置，纯白回复左置，旧内容清场"""
+        
+        # 1. 把之前的对话推上去，给这一轮留出整个屏幕的视觉空间
+        self.out_text.insert(tk.END, "\n" * 25) 
 
-        self._write(f"[运行模型: {model_name}]\n", "sys_tag")
+        # 2. 获取用户原话（不加任何前缀标签）
+        user_q = self.quest_ent.get().strip()
+        if not user_q: user_q = "请求指引"
         
+        # 3. 在右侧显示金黄色的用户原话
+        self.out_text.insert(tk.END, f"{user_q}\n", "user_msg")
+        self.out_text.insert(tk.END, "\n", "sys_tag") 
+
+        # 4. 演算底座展示（仅在首轮通过白色文字混入，保持专业感）
+        if not is_chat:
+            bazi = self.master_data.get('data_foundation', '')
+            name = self.master_data.get('name_logic', '')
+            spark = self.master_data.get("oracle_spark", "")
+            
+            # 将依据直接作为对话的序章，用白色显示，维持干净的界面
+            evidence = (f"◈ 演算底座：{bazi}\n"
+                        f"◈ 名号能量：{name}\n"
+                        f"◈ 核心判定：{spark}\n\n")
+            self.out_text.insert(tk.END, evidence, "boss_msg")
+
+        # 5. 主祭司文字流生成
         def _anim():
+            self.master.after(0, lambda: self.out_text.see(tk.END))
+            
             for char in text:
-                self.master.after(0, lambda c=char: (self.out_text.insert(tk.END, c), self.out_text.see(tk.END)))
+                current_scroll = self.out_text.yview()
+                is_at_bottom = current_scroll[1] >= 0.95
+                
+                # 统一使用 boss_msg 纯白显示
+                self.master.after(0, lambda c=char: self.out_text.insert(tk.END, c, "boss_msg"))
+                
+                if is_at_bottom:
+                    self.master.after(0, lambda: self.out_text.see(tk.END))
                 time.sleep(0.01)
+            
+            self.master.after(0, lambda: self.out_text.insert(tk.END, "\n\n", "boss_msg"))
+            self.master.after(0, lambda: self.run_btn.config(state="normal", text="✦ 继续追问 ✦"))
+
         threading.Thread(target=_anim, daemon=True).start()
-        
-        self.run_btn.config(state="normal", text="✦ 继续追问 ✦")
         self.quest_ent.delete(0, tk.END)
 
     def _write(self, msg, tag=None):
